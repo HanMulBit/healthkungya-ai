@@ -2,20 +2,22 @@ from flask import Flask, request, jsonify
 import pandas as pd
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from msrest.authentication import CognitiveServicesCredentials
-# pandas, azure-cognitiveservices-vision-computervision, msrest
 
-# Flask 앱 초기화
 app = Flask(__name__)
 
-# Azure Cognitive Services 설정
 endpoint = "https://aiden-after.cognitiveservices.azure.com/"
 subscription_key = "00cc9c94162e4fb1829dbc1d4b1c8d2c"
 computervision_client = ComputerVisionClient(endpoint, CognitiveServicesCredentials(subscription_key))
 
-# 엑셀 파일 로드
-food_db = pd.read_excel("음식DB.xlsx")
+food_db = pd.read_excel("Food_DB.xlsx")
 
-@app.route('/analyze_image', methods=['POST'])
+tag_to_food_name = {
+    "rice": "밥",
+    "gimbap": "김밥",
+    "mandu": "만두"
+}
+
+@app.route('/analyze_image')
 def analyze_image():
     data = request.json
     image_url = data.get('image_url')
@@ -23,42 +25,35 @@ def analyze_image():
     if not image_url:
         return jsonify({"error": "Image URL is required"}), 400
 
-    # 이미지 태그 추출
     tags_result = computervision_client.tag_image(image_url)
-    
-    # 태그 결과 출력
-    labels = {}
+
     if tags_result.tags:
-        for tag in tags_result.tags:
-            labels[tag.name] = tag.confidence
-    
-    rice_related = ['white rice', 'steamed rice', 'jasmine rice', 'rice']
-    confidence_threshold = 0.8
+        detected_tags = [tag.name for tag in tags_result.tags]
+        print("Detected tags:", detected_tags)  
 
-    rice_confidence = sum([labels[label] for label in rice_related if label in labels])
+        found = False
+        for tag in detected_tags:
+            food_name = tag_to_food_name.get(tag, None) 
+            if food_name:
+                food_name = food_name.strip() 
+                print(f"Checking if '{food_name}' is in the database...")  
 
-    if rice_confidence > confidence_threshold:
-        final_label = '쌀밥'
+                food_db['음 식 명'] = food_db['음 식 명'].str.strip() 
+
+                if food_name in food_db['음 식 명'].values:
+                    matching_row = food_db[food_db['음 식 명'] == food_name]
+                    r_value = matching_row['에너지(kcal)'].values[0]
+                    found = True
+                    result = {
+                        "final_label": food_name,
+                        "calories": r_value
+                    }
+                    return jsonify(result)
+        
+        if not found:
+            return jsonify({"error": "No matching tags found in the database."}), 404
     else:
-        final_label = max(labels, key=labels.get)
-
-    # '쌀밥'에 해당하는 칼로리 값 검색
-    rice_row = food_db[food_db['대표식품명'].str.contains('쌀밥', na=False)]
-
-    if not rice_row.empty:
-        kcal_value = rice_row['에너지(kcal)'].values[0]
-        result = {
-            "final_label": final_label,
-            "calories": kcal_value
-        }
-    else:
-        result = {
-            "final_label": final_label,
-            "calories": None,
-            "message": "'쌀밥' not found in the database."
-        }
-
-    return jsonify(result)
+        return jsonify({"error": "No tags detected."}), 404
 
 if __name__ == '__main__':
     app.run(debug=True)
